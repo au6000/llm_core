@@ -54,3 +54,15 @@ class ChatRequest:
     temperature: float = 0.0
     json_output: bool = False
     track_usage: bool = True
+    retry_count: int = 3
+    retry_delay: float = 1.0
+
+
+@dataclass
+class StreamChunk:
+    """ストリームのチャンク"""
+    content: str  # このチャンクのテキスト
+    provider: str
+    model: str
+    is_final: bool = False  # 最後のチャンクかどうか
+    usage: Optional[Usage] = None  # 最後のチャンクにのみ含まれる

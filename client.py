@@ -5,7 +5,7 @@ LLMクライアント - 各プロバイダーとの通信を担当
 import json
 import time
 from functools import lru_cache
-from typing import Optional, Union
+from typing import Optional, Union, Iterator
 
 from openai import OpenAI, APIError as OpenAIAPIError, RateLimitError as OpenAIRateLimitError
 from anthropic import Anthropic, APIError as AnthropicAPIError, RateLimitError as AnthropicRateLimitError
@@ -13,7 +13,7 @@ import google.generativeai as genai
 from google.api_core.exceptions import ResourceExhausted as GoogleRateLimitError
 
 from .config import get_api_key, get_model, get_vertex_config, DEFAULT_PROVIDER
-from .types import ChatMessage, ChatResponse, Usage, Provider
+from .types import ChatRequest, ChatResponse, StreamChunk, Usage
 from .exceptions import LLMAPIError, LLMRateLimitError, LLMResponseError, LLMConfigError
 from . import usage_tracker
 
@@ -261,74 +261,245 @@ def _call_vertex(
 
 
 # =============================================================================
+# プロバイダー別ストリーム実装
+# =============================================================================
+def _stream_openai(
+    messages: list[dict],
+    model: str,
+    max_tokens: int,
+    temperature: float,
+) -> Iterator[StreamChunk]:
+    """OpenAI APIストリーム呼び出し"""
+    client = _get_openai_client()
+
+    try:
+        stream = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+    except OpenAIRateLimitError as e:
+        raise LLMRateLimitError(str(e), provider="openai")
+    except OpenAIAPIError as e:
+        raise LLMAPIError(str(e), provider="openai", status_code=getattr(e, 'status_code', None))
+
+    for chunk in stream:
+        if chunk.choices and chunk.choices[0].delta.content:
+            yield StreamChunk(
+                content=chunk.choices[0].delta.content,
+                provider="openai",
+                model=model,
+            )
+        # 最後のチャンクにusageが含まれる
+        if chunk.usage:
+            yield StreamChunk(
+                content="",
+                provider="openai",
+                model=model,
+                is_final=True,
+                usage=Usage(
+                    input_tokens=chunk.usage.prompt_tokens,
+                    output_tokens=chunk.usage.completion_tokens,
+                ),
+            )
+
+
+def _stream_anthropic(
+    messages: list[dict],
+    system_prompt: Optional[str],
+    model: str,
+    max_tokens: int,
+    temperature: float,
+) -> Iterator[StreamChunk]:
+    """Anthropic APIストリーム呼び出し"""
+    client = _get_anthropic_client()
+
+    try:
+        with client.messages.stream(
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=system_prompt or "",
+            messages=messages,
+        ) as stream:
+            for text in stream.text_stream:
+                yield StreamChunk(
+                    content=text,
+                    provider="anthropic",
+                    model=model,
+                )
+            # 最後にusageを取得
+            response = stream.get_final_message()
+            if response.usage:
+                yield StreamChunk(
+                    content="",
+                    provider="anthropic",
+                    model=model,
+                    is_final=True,
+                    usage=Usage(
+                        input_tokens=response.usage.input_tokens,
+                        output_tokens=response.usage.output_tokens,
+                    ),
+                )
+    except AnthropicRateLimitError as e:
+        raise LLMRateLimitError(str(e), provider="anthropic")
+    except AnthropicAPIError as e:
+        raise LLMAPIError(str(e), provider="anthropic", status_code=getattr(e, 'status_code', None))
+
+
+def _stream_google(
+    messages: list[dict],
+    system_prompt: Optional[str],
+    model: str,
+    max_tokens: int,
+    temperature: float,
+) -> Iterator[StreamChunk]:
+    """Google Gemini APIストリーム呼び出し"""
+    _get_gemini_configured()
+
+    contents = []
+    for msg in messages:
+        role = "user" if msg["role"] == "user" else "model"
+        contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+
+    generation_config = {
+        "max_output_tokens": max_tokens,
+        "temperature": temperature,
+    }
+
+    model_instance = genai.GenerativeModel(
+        model,
+        system_instruction=system_prompt if system_prompt else None,
+    )
+
+    try:
+        response = model_instance.generate_content(
+            contents,
+            generation_config=generation_config,
+            stream=True,
+        )
+        for chunk in response:
+            if chunk.text:
+                yield StreamChunk(
+                    content=chunk.text,
+                    provider="google",
+                    model=model,
+                )
+        # Geminiは最後にusage_metadataを取得
+        # NOTE: ストリーム時のusage取得はAPIの制限により不正確な場合がある
+        yield StreamChunk(
+            content="",
+            provider="google",
+            model=model,
+            is_final=True,
+        )
+    except GoogleRateLimitError as e:
+        raise LLMRateLimitError(str(e), provider="google")
+    except Exception as e:
+        raise LLMAPIError(str(e), provider="google")
+
+
+def _stream_vertex(
+    messages: list[dict],
+    system_prompt: Optional[str],
+    model: str,
+    max_tokens: int,
+    temperature: float,
+) -> Iterator[StreamChunk]:
+    """Vertex AI (Gemini) APIストリーム呼び出し"""
+    from vertexai.generative_models import GenerativeModel, GenerationConfig
+
+    _get_vertex_client()
+
+    contents = []
+    for msg in messages:
+        role = "user" if msg["role"] == "user" else "model"
+        contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+
+    generation_config = GenerationConfig(
+        max_output_tokens=max_tokens,
+        temperature=temperature,
+    )
+
+    model_instance = GenerativeModel(
+        model,
+        system_instruction=system_prompt if system_prompt else None,
+    )
+
+    try:
+        response = model_instance.generate_content(
+            contents,
+            generation_config=generation_config,
+            stream=True,
+        )
+        for chunk in response:
+            if chunk.text:
+                yield StreamChunk(
+                    content=chunk.text,
+                    provider="vertex",
+                    model=model,
+                )
+        yield StreamChunk(
+            content="",
+            provider="vertex",
+            model=model,
+            is_final=True,
+        )
+    except GoogleRateLimitError as e:
+        raise LLMRateLimitError(str(e), provider="vertex")
+    except Exception as e:
+        raise LLMAPIError(str(e), provider="vertex")
+
+
+# =============================================================================
 # メイン関数
 # =============================================================================
-def chat_completion(
-    prompt: str,
-    *,
-    system_prompt: Optional[str] = None,
-    messages: Optional[list[ChatMessage]] = None,
-    model: Optional[str] = None,
-    provider: Optional[str] = None,
-    max_tokens: int = 4096,
-    temperature: float = 1.0,
-    json_output: bool = False,
-    track_usage: bool = True,
-    retry_count: int = 3,
-    retry_delay: float = 1.0,
-) -> ChatResponse:
+def chat_completion(request: ChatRequest) -> ChatResponse:
     """
     LLMにチャット補完リクエストを送信
 
     Args:
-        prompt: ユーザープロンプト
-        system_prompt: システムプロンプト（省略可）
-        messages: メッセージ履歴（promptと併用不可、指定時はpromptは無視）
-        model: モデル名（省略時はプロバイダーのデフォルト）
-        provider: プロバイダー（"openai", "anthropic", "google", "vertex"）
-        max_tokens: 最大出力トークン数
-        temperature: 温度パラメータ
-        json_output: JSON形式で出力を要求
-        track_usage: 使用量を記録するか
-        retry_count: リトライ回数
-        retry_delay: リトライ間隔（秒）
+        request: ChatRequestオブジェクト
 
     Returns:
         ChatResponse: レスポンス
     """
-    provider = provider or DEFAULT_PROVIDER
-    model = get_model(provider, model)
+    provider = request.provider or DEFAULT_PROVIDER
+    model = get_model(provider, request.model)
 
     # メッセージ構築
-    if messages:
-        msg_list = [{"role": m.role, "content": m.content} for m in messages]
+    if request.messages:
+        msg_list = [{"role": m.role, "content": m.content} for m in request.messages]
     else:
-        msg_list = [{"role": "user", "content": prompt}]
+        msg_list = [{"role": "user", "content": request.prompt}]
 
     # リトライループ
     last_error = None
-    for attempt in range(retry_count):
+    for attempt in range(request.retry_count):
         try:
             if provider == "openai":
                 # OpenAIはsystem_promptをmessagesに含める
-                if system_prompt:
-                    msg_list = [{"role": "system", "content": system_prompt}] + msg_list
-                response = _call_openai(msg_list, model, max_tokens, temperature, json_output)
+                if request.system_prompt:
+                    msg_list = [{"role": "system", "content": request.system_prompt}] + msg_list
+                response = _call_openai(msg_list, model, request.max_tokens, request.temperature, request.json_output)
 
             elif provider == "anthropic":
-                response = _call_anthropic(msg_list, system_prompt, model, max_tokens, temperature, json_output)
+                response = _call_anthropic(msg_list, request.system_prompt, model, request.max_tokens, request.temperature, request.json_output)
 
             elif provider == "google":
-                response = _call_google(msg_list, system_prompt, model, max_tokens, temperature, json_output)
+                response = _call_google(msg_list, request.system_prompt, model, request.max_tokens, request.temperature, request.json_output)
 
             elif provider == "vertex":
-                response = _call_vertex(msg_list, system_prompt, model, max_tokens, temperature, json_output)
+                response = _call_vertex(msg_list, request.system_prompt, model, request.max_tokens, request.temperature, request.json_output)
 
             else:
                 raise LLMConfigError(f"Unknown provider: {provider}")
 
             # 使用量記録
-            if track_usage and response.usage:
+            if request.track_usage and response.usage:
                 usage_tracker.add_usage(
                     provider=provider,
                     model=model,
@@ -340,8 +511,8 @@ def chat_completion(
 
         except LLMRateLimitError as e:
             last_error = e
-            if attempt < retry_count - 1:
-                time.sleep(retry_delay * (attempt + 1))  # 指数バックオフ的
+            if attempt < request.retry_count - 1:
+                time.sleep(request.retry_delay * (attempt + 1))  # 指数バックオフ的
                 continue
             raise
 
@@ -371,22 +542,18 @@ def _extract_json_from_response(content: str) -> str:
     return content.strip()
 
 
-def chat_completion_json(
-    prompt: str,
-    **kwargs,
-) -> dict:
+def chat_completion_json(request: ChatRequest) -> dict:
     """
     JSON形式でレスポンスを取得し、dictにパースして返す
 
     Args:
-        prompt: プロンプト
-        **kwargs: chat_completionに渡す引数
+        request: ChatRequestオブジェクト（json_outputは自動でTrueに設定される）
 
     Returns:
         dict: パースされたJSON
     """
-    kwargs["json_output"] = True
-    response = chat_completion(prompt, **kwargs)
+    request.json_output = True
+    response = chat_completion(request)
 
     try:
         content = _extract_json_from_response(response.content)
@@ -395,19 +562,76 @@ def chat_completion_json(
         raise LLMResponseError(f"Failed to parse JSON response: {e}\nResponse: {response.content[:500]}")
 
 
-def chat_completion_text(
-    prompt: str,
-    **kwargs,
-) -> str:
+def chat_completion_text(request: ChatRequest) -> str:
     """
     テキストレスポンスのみを返す（シンプルなラッパー）
 
     Args:
-        prompt: プロンプト
-        **kwargs: chat_completionに渡す引数
+        request: ChatRequestオブジェクト
 
     Returns:
         str: レスポンステキスト
     """
-    response = chat_completion(prompt, **kwargs)
+    response = chat_completion(request)
     return response.content
+
+
+def chat_completion_stream(request: ChatRequest) -> Iterator[StreamChunk]:
+    """
+    LLMにストリーミングリクエストを送信
+
+    Args:
+        request: ChatRequestオブジェクト
+
+    Yields:
+        StreamChunk: ストリームのチャンク
+
+    Usage:
+        request = ChatRequest(prompt="Hello!")
+        for chunk in chat_completion_stream(request):
+            print(chunk.content, end="", flush=True)
+            if chunk.is_final and chunk.usage:
+                print(f"\\nTokens: {chunk.usage.total_tokens}")
+    """
+    provider = request.provider or DEFAULT_PROVIDER
+    model = get_model(provider, request.model)
+
+    # メッセージ構築
+    if request.messages:
+        msg_list = [{"role": m.role, "content": m.content} for m in request.messages]
+    else:
+        msg_list = [{"role": "user", "content": request.prompt}]
+
+    if provider == "openai":
+        if request.system_prompt:
+            msg_list = [{"role": "system", "content": request.system_prompt}] + msg_list
+        stream = _stream_openai(msg_list, model, request.max_tokens, request.temperature)
+
+    elif provider == "anthropic":
+        stream = _stream_anthropic(msg_list, request.system_prompt, model, request.max_tokens, request.temperature)
+
+    elif provider == "google":
+        stream = _stream_google(msg_list, request.system_prompt, model, request.max_tokens, request.temperature)
+
+    elif provider == "vertex":
+        stream = _stream_vertex(msg_list, request.system_prompt, model, request.max_tokens, request.temperature)
+
+    else:
+        raise LLMConfigError(f"Unknown provider: {provider}")
+
+    # 使用量記録用
+    final_usage = None
+
+    for chunk in stream:
+        if chunk.is_final and chunk.usage:
+            final_usage = chunk.usage
+        yield chunk
+
+    # 使用量記録
+    if request.track_usage and final_usage:
+        usage_tracker.add_usage(
+            provider=provider,
+            model=model,
+            input_tokens=final_usage.input_tokens,
+            output_tokens=final_usage.output_tokens,
+        )

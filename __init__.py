@@ -2,24 +2,29 @@
 llm_core - 汎用LLMクライアントライブラリ
 
 Usage:
-    from llm_core import chat_completion, chat_completion_json, tracker
+    from llm_core import chat_completion, chat_completion_json, chat_completion_stream, ChatRequest, tracker
 
     # シンプルな呼び出し
-    response = chat_completion("Hello!")
+    response = chat_completion(ChatRequest(prompt="Hello!"))
     print(response.content)
 
     # JSON出力
-    data = chat_completion_json("Return a JSON with name and age")
+    data = chat_completion_json(ChatRequest(prompt="Return a JSON with name and age"))
+
+    # ストリーミング
+    for chunk in chat_completion_stream(ChatRequest(prompt="Tell me a story")):
+        print(chunk.content, end="", flush=True)
 
     # モデル・プロバイダー指定
-    response = chat_completion(
-        "Explain quantum computing",
+    request = ChatRequest(
+        prompt="Explain quantum computing",
         model="gpt-4o",
         provider="openai",
         system_prompt="You are a helpful assistant.",
         max_tokens=1000,
         temperature=0.7,
     )
+    response = chat_completion(request)
 
     # 使用量確認
     tracker.print_summary()
@@ -38,11 +43,14 @@ from .client import (
     chat_completion,
     chat_completion_json,
     chat_completion_text,
+    chat_completion_stream,
 )
 
 from .types import (
     ChatMessage,
+    ChatRequest,
     ChatResponse,
+    StreamChunk,
     Usage,
     Provider,
 )
@@ -68,9 +76,12 @@ __all__ = [
     "chat_completion",
     "chat_completion_json",
     "chat_completion_text",
+    "chat_completion_stream",
     # Types
     "ChatMessage",
+    "ChatRequest",
     "ChatResponse",
+    "StreamChunk",
     "Usage",
     "Provider",
     # Exceptions
