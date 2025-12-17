@@ -12,6 +12,7 @@ class Provider(str, Enum):
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     GOOGLE = "google"
+    VERTEX = "vertex"
 
 
 @dataclass

@@ -134,41 +134,66 @@ def get_vertex_config() -> dict:
     """
     Vertex AI用の設定を取得
 
+    認証方式（優先順位）:
+        1. GOOGLE_APPLICATION_CREDENTIALS: サービスアカウントJSONファイルのパス
+        2. Application Default Credentials (ADC): gcloud auth application-default login
+
     環境変数:
-        - GOOGLE_APPLICATION_CREDENTIALS: サービスアカウントJSONファイルのパス
-        - VERTEX_PROJECT_ID: GCPプロジェクトID（省略時はJSONから取得）
+        - GOOGLE_APPLICATION_CREDENTIALS: サービスアカウントJSONファイルのパス（任意）
+        - VERTEX_PROJECT_ID: GCPプロジェクトID（必須、または GOOGLE_CLOUD_PROJECT）
         - VERTEX_LOCATION: リージョン（デフォルト: us-central1）
     """
     import json as _json
 
     credentials_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-    if not credentials_path:
-        raise LLMConfigError(
-            "GOOGLE_APPLICATION_CREDENTIALS not found. Set the path to your service account JSON file."
-        )
+    auth_method = None
 
-    if not os.path.exists(credentials_path):
-        raise LLMConfigError(
-            f"Service account JSON file not found: {credentials_path}"
-        )
-
-    # プロジェクトIDをJSONから取得（環境変数で上書き可能）
-    project_id = os.environ.get("VERTEX_PROJECT_ID")
-    if not project_id:
-        with open(credentials_path, "r") as f:
-            creds_data = _json.load(f)
-            project_id = creds_data.get("project_id")
-        if not project_id:
+    # 認証方式1: サービスアカウントJSONファイル
+    if credentials_path:
+        if not os.path.exists(credentials_path):
             raise LLMConfigError(
-                "VERTEX_PROJECT_ID not found in environment or service account JSON."
+                f"Service account JSON file not found: {credentials_path}"
             )
+        auth_method = "service_account"
+    else:
+        # 認証方式2: Application Default Credentials (ADC)
+        auth_method = "adc"
+
+    # プロジェクトIDの取得（優先順位: VERTEX_PROJECT_ID > GOOGLE_CLOUD_PROJECT > JSONから取得）
+    project_id = os.environ.get("VERTEX_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT")
+
+    if not project_id:
+        if credentials_path:
+            # サービスアカウントJSONからプロジェクトIDを取得
+            try:
+                with open(credentials_path, "r") as f:
+                    creds_data = _json.load(f)
+                    project_id = creds_data.get("project_id")
+            except (_json.JSONDecodeError, IOError) as e:
+                raise LLMConfigError(f"Failed to read service account JSON: {e}")
+
+        if not project_id:
+            # ADC使用時はgcloudの設定からproject_idを取得試行
+            try:
+                import google.auth
+                _, adc_project = google.auth.default()
+                project_id = adc_project
+            except Exception:
+                pass
+
+    if not project_id:
+        raise LLMConfigError(
+            "VERTEX_PROJECT_ID or GOOGLE_CLOUD_PROJECT not found. "
+            "Set the environment variable or ensure gcloud is configured with a default project."
+        )
 
     location = os.environ.get("VERTEX_LOCATION", "us-central1")
 
     return {
-        "credentials_path": credentials_path,
+        "credentials_path": credentials_path,  # Noneの場合はADCを使用
         "project_id": project_id,
         "location": location,
+        "auth_method": auth_method,
     }
 
 

@@ -39,7 +39,7 @@ Required environment variables:
     - GOOGLE_API_KEY
 """
 
-from .client import (
+from .chat import (
     chat_completion,
     chat_completion_json,
     chat_completion_text,
