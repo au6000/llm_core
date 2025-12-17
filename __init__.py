@@ -72,6 +72,15 @@ from .config import (
     DEFAULT_PROVIDER,
 )
 
+from .utils import (
+    extract_json,
+    parse_json,
+    get_api_key,
+    get_vertex_config,
+    get_model,
+    get_pricing,
+)
+
 __all__ = [
     # Main functions
     "chat_completion",
@@ -98,6 +107,13 @@ __all__ = [
     "PRICING",
     "DEFAULT_MODELS",
     "DEFAULT_PROVIDER",
+    # Utils
+    "extract_json",
+    "parse_json",
+    "get_api_key",
+    "get_vertex_config",
+    "get_model",
+    "get_pricing",
 ]
 
 __version__ = "1.0.0"

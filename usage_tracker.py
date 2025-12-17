@@ -8,7 +8,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from .config import get_pricing, USD_TO_JPY
+from .config import USD_TO_JPY
+from .utils import get_pricing
 
 
 @dataclass

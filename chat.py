@@ -6,7 +6,8 @@ import json
 import time
 from typing import Iterator
 
-from .config import get_model, DEFAULT_PROVIDER
+from .config import DEFAULT_PROVIDER
+from .utils import get_model, extract_json
 from .types import ChatRequest, ChatResponse, StreamChunk, Usage
 from .exceptions import LLMConfigError, LLMRateLimitError, LLMAPIError, LLMResponseError
 from . import usage_tracker
@@ -87,26 +88,6 @@ def chat_completion(request: ChatRequest) -> ChatResponse:
     raise last_error
 
 
-def _extract_json_from_response(content: str) -> str:
-    """
-    レスポンスからJSONを抽出（マークダウンコードブロックを除去）
-    """
-    content = content.strip()
-
-    # ```json ... ``` または ``` ... ``` 形式の場合
-    if content.startswith("```"):
-        lines = content.split("\n")
-        # 最初の行（```json など）を除去
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        # 最後の行（```）を除去
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        content = "\n".join(lines)
-
-    return content.strip()
-
-
 def chat_completion_json(request: ChatRequest) -> dict:
     """
     JSON形式でレスポンスを取得し、dictにパースして返す
@@ -121,7 +102,7 @@ def chat_completion_json(request: ChatRequest) -> dict:
     response = chat_completion(request)
 
     try:
-        content = _extract_json_from_response(response.content)
+        content = extract_json(response.content)
         return json.loads(content)
     except json.JSONDecodeError as e:
         raise LLMResponseError(f"Failed to parse JSON response: {e}\nResponse: {response.content[:500]}")
