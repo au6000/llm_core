@@ -3,6 +3,7 @@ LLMの使用量・コストを記録・集計するモジュール
 """
 
 import json
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -22,16 +23,17 @@ class UsageRecord:
 
 
 class UsageTracker:
-    """トークン使用量とコストを記録"""
+    """トークン使用量とコストを記録（スレッドセーフ）"""
 
     def __init__(self):
         self._records: list[UsageRecord] = []
         self._total_input_tokens: int = 0
         self._total_output_tokens: int = 0
         self._total_cost_usd: float = 0.0
+        self._lock = threading.Lock()
 
     def add(self, provider: str, model: str, input_tokens: int, output_tokens: int):
-        """使用量を追加"""
+        """使用量を追加（スレッドセーフ）"""
         pricing = get_pricing(provider, model)
         cost = (input_tokens * pricing["input"] + output_tokens * pricing["output"]) / 1_000_000
 
@@ -43,10 +45,11 @@ class UsageTracker:
             cost_usd=cost,
         )
 
-        self._records.append(record)
-        self._total_input_tokens += input_tokens
-        self._total_output_tokens += output_tokens
-        self._total_cost_usd += cost
+        with self._lock:
+            self._records.append(record)
+            self._total_input_tokens += input_tokens
+            self._total_output_tokens += output_tokens
+            self._total_cost_usd += cost
 
     @property
     def call_count(self) -> int:
