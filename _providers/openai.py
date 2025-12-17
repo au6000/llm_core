@@ -11,6 +11,14 @@ from ..exceptions import LLMAPIError, LLMRateLimitError
 from .._init_clients import get_openai_client
 
 
+def _uses_max_completion_tokens(model: str) -> bool:
+    """max_completion_tokensを使用するモデルかどうかを判定
+
+    対象: o1, o3, o4シリーズ、GPT-5シリーズ、GPT-4.1シリーズ
+    """
+    return model.startswith(("o1", "o3", "o4", "gpt-5", "gpt-4.1"))
+
+
 def call_openai(
     messages: list[dict],
     model: str,
@@ -24,9 +32,15 @@ def call_openai(
     kwargs = {
         "model": model,
         "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
     }
+
+    # 推論モデル（o1, o3, o4）は max_completion_tokens を使用
+    if _uses_max_completion_tokens(model):
+        kwargs["max_completion_tokens"] = max_tokens
+    else:
+        kwargs["max_tokens"] = max_tokens
+        kwargs["temperature"] = temperature
+
     if json_output:
         kwargs["response_format"] = {"type": "json_object"}
 
@@ -62,15 +76,22 @@ def stream_openai(
     """OpenAI APIストリーム呼び出し"""
     client = get_openai_client()
 
+    kwargs = {
+        "model": model,
+        "messages": messages,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+
+    # 推論モデル（o1, o3, o4）は max_completion_tokens を使用
+    if _uses_max_completion_tokens(model):
+        kwargs["max_completion_tokens"] = max_tokens
+    else:
+        kwargs["max_tokens"] = max_tokens
+        kwargs["temperature"] = temperature
+
     try:
-        stream = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            stream=True,
-            stream_options={"include_usage": True},
-        )
+        stream = client.chat.completions.create(**kwargs)
     except OpenAIRateLimitError as e:
         raise LLMRateLimitError(str(e), provider="openai")
     except OpenAIAPIError as e:

@@ -64,6 +64,7 @@ from .exceptions import (
 )
 
 from . import usage_tracker as tracker
+from .usage_tracker import print_usage_summary
 
 from .config import (
     PRICING,
@@ -92,6 +93,7 @@ __all__ = [
     "LLMResponseError",
     # Tracker
     "tracker",
+    "print_usage_summary",
     # Config
     "PRICING",
     "DEFAULT_MODELS",

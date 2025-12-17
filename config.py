@@ -64,7 +64,7 @@ PRICING = {
     },
     "google": {
         # Gemini 3 世代
-        "gemini-3-pro": {"input": 2.00, "output": 12.00},
+        "gemini-3-pro-preview": {"input": 2.00, "output": 12.00},
         # Gemini 2.5 世代
         "gemini-2.5-pro": {"input": 1.25, "output": 10.00},
         "gemini-2.5-flash": {"input": 0.30, "output": 2.50},
@@ -81,17 +81,17 @@ PRICING = {
 # デフォルトモデル
 # =============================================================================
 DEFAULT_MODELS = {
-    "openai": "gpt-5",
+    "openai": "gpt-5.1",
     "anthropic": "claude-sonnet-4-5-20250929",
-    "google": "gemini-3-pro",
-    "vertex": "gemini-3-pro",
+    "google": "gemini-3-pro-preview",
+    "vertex": "gemini-3-pro-preview",
 }
 
 
 # =============================================================================
 # デフォルトプロバイダー
 # =============================================================================
-DEFAULT_PROVIDER = "anthropic"
+DEFAULT_PROVIDER = "openai"
 
 
 # =============================================================================
@@ -187,7 +187,7 @@ def get_vertex_config() -> dict:
             "Set the environment variable or ensure gcloud is configured with a default project."
         )
 
-    location = os.environ.get("VERTEX_LOCATION", "us-central1")
+    location = os.environ.get("VERTEX_LOCATION", "global")
 
     return {
         "credentials_path": credentials_path,  # Noneの場合はADCを使用
@@ -211,7 +211,9 @@ def get_model(provider: str, model: Optional[str] = None) -> str:
 
 def get_pricing(provider: str, model: str) -> dict:
     """料金情報を取得"""
-    provider_pricing = PRICING.get(provider, {})
+    # vertexはgoogleと同じ料金体系
+    pricing_key = "google" if provider == "vertex" else provider
+    provider_pricing = PRICING.get(pricing_key, {})
     return provider_pricing.get(model, {"input": 0, "output": 0})
 
 
