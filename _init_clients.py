@@ -8,7 +8,7 @@ from openai import OpenAI
 from anthropic import Anthropic
 import google.generativeai as genai
 
-from .config import get_api_key, get_vertex_config
+from .utils import get_api_key, get_vertex_config
 
 
 @lru_cache(maxsize=1)
