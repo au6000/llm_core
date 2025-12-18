@@ -20,6 +20,7 @@ class UsageRecord:
     input_tokens: int
     output_tokens: int
     cost_usd: float
+    elapsed_time: float  # 秒
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
 
@@ -31,9 +32,10 @@ class UsageTracker:
         self._total_input_tokens: int = 0
         self._total_output_tokens: int = 0
         self._total_cost_usd: float = 0.0
+        self._total_elapsed_time: float = 0.0
         self._lock = threading.Lock()
 
-    def add(self, provider: str, model: str, input_tokens: int, output_tokens: int):
+    def add(self, provider: str, model: str, input_tokens: int, output_tokens: int, elapsed_time: float = 0.0):
         """使用量を追加（スレッドセーフ）"""
         pricing = get_pricing(provider, model)
         cost = (input_tokens * pricing["input"] + output_tokens * pricing["output"]) / 1_000_000
@@ -44,6 +46,7 @@ class UsageTracker:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cost_usd=cost,
+            elapsed_time=elapsed_time,
         )
 
         with self._lock:
@@ -51,6 +54,7 @@ class UsageTracker:
             self._total_input_tokens += input_tokens
             self._total_output_tokens += output_tokens
             self._total_cost_usd += cost
+            self._total_elapsed_time += elapsed_time
 
     @property
     def call_count(self) -> int:
@@ -76,6 +80,10 @@ class UsageTracker:
     def total_cost_jpy(self) -> float:
         return self._total_cost_usd * USD_TO_JPY
 
+    @property
+    def total_elapsed_time(self) -> float:
+        return self._total_elapsed_time
+
     def summary(self) -> dict:
         """サマリーを返す"""
         return {
@@ -85,6 +93,7 @@ class UsageTracker:
             "total_tokens": self.total_tokens,
             "total_cost_usd": round(self.total_cost_usd, 6),
             "total_cost_jpy": round(self.total_cost_jpy, 2),
+            "total_elapsed_time": round(self.total_elapsed_time, 2),
         }
 
     def details(self) -> list[dict]:
@@ -96,6 +105,7 @@ class UsageTracker:
                 "input_tokens": r.input_tokens,
                 "output_tokens": r.output_tokens,
                 "cost_usd": r.cost_usd,
+                "elapsed_time": r.elapsed_time,
                 "timestamp": r.timestamp,
             }
             for r in self._records
@@ -107,6 +117,7 @@ class UsageTracker:
         self._total_input_tokens = 0
         self._total_output_tokens = 0
         self._total_cost_usd = 0.0
+        self._total_elapsed_time = 0.0
 
     def print_summary(self):
         """使用量サマリーを出力"""
@@ -117,6 +128,7 @@ class UsageTracker:
         print(f"入力トークン:    {self.total_input_tokens:,}")
         print(f"出力トークン:    {self.total_output_tokens:,}")
         print(f"合計トークン:    {self.total_tokens:,}")
+        print(f"合計時間:        {self.total_elapsed_time:.2f}秒")
         print(f"推定コスト:      ${self.total_cost_usd:.4f} (約{self.total_cost_jpy:.0f}円)")
         print('='*40 + "\n")
 
@@ -151,9 +163,9 @@ def get_default_tracker() -> UsageTracker:
     return _default_tracker
 
 
-def add_usage(provider: str, model: str, input_tokens: int, output_tokens: int):
+def add_usage(provider: str, model: str, input_tokens: int, output_tokens: int, elapsed_time: float = 0.0):
     """使用量を追加（デフォルトトラッカー）"""
-    _default_tracker.add(provider, model, input_tokens, output_tokens)
+    _default_tracker.add(provider, model, input_tokens, output_tokens, elapsed_time)
 
 
 def get_usage_stats() -> dict:

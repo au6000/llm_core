@@ -46,6 +46,8 @@ def chat_completion(request: ChatRequest) -> ChatResponse:
     last_error = None
     for attempt in range(request.retry_count):
         try:
+            start_time = time.time()
+
             if provider == "openai":
                 # OpenAIはsystem_promptをmessagesに含める
                 if request.system_prompt:
@@ -64,6 +66,8 @@ def chat_completion(request: ChatRequest) -> ChatResponse:
             else:
                 raise LLMConfigError(f"Unknown provider: {provider}")
 
+            elapsed_time = time.time() - start_time
+
             # 使用量記録
             if request.track_usage and response.usage:
                 usage_tracker.add_usage(
@@ -71,6 +75,7 @@ def chat_completion(request: ChatRequest) -> ChatResponse:
                     model=model,
                     input_tokens=response.usage.input_tokens,
                     output_tokens=response.usage.output_tokens,
+                    elapsed_time=elapsed_time,
                 )
 
             return response
@@ -101,11 +106,14 @@ def chat_completion_json(request: ChatRequest) -> dict:
     request.json_output = True
     response = chat_completion(request)
 
+    if not response.content:
+        raise LLMResponseError("LLMレスポンスが空です")
+
     try:
         content = extract_json(response.content)
         return json.loads(content)
     except json.JSONDecodeError as e:
-        raise LLMResponseError(f"Failed to parse JSON response: {e}\nResponse: {response.content[:500]}")
+        raise LLMResponseError(f"Failed to parse JSON: {e}\nResponse: {response.content[:500]}")
 
 
 def chat_completion_text(request: ChatRequest) -> str:
@@ -167,11 +175,14 @@ def chat_completion_stream(request: ChatRequest) -> Iterator[StreamChunk]:
 
     # 使用量記録用
     final_usage = None
+    start_time = time.time()
 
     for chunk in stream:
         if chunk.is_final and chunk.usage:
             final_usage = chunk.usage
         yield chunk
+
+    elapsed_time = time.time() - start_time
 
     # 使用量記録
     if request.track_usage and final_usage:
@@ -180,4 +191,5 @@ def chat_completion_stream(request: ChatRequest) -> Iterator[StreamChunk]:
             model=model,
             input_tokens=final_usage.input_tokens,
             output_tokens=final_usage.output_tokens,
+            elapsed_time=elapsed_time,
         )
